@@ -45,15 +45,20 @@ jobs:
         shell: bash
         run: cargo fmt -p "$CRATE" -- --check
 
+      # `--no-deps` keeps the lint on this crate. Without it clippy also lints the
+      # workspace crates it depends on, and one of them fails clippy on Windows
+      # on `main` for reasons unrelated to this change.
       - name: clippy
         shell: bash
-        run: cargo clippy --locked -p "$CRATE" --all-targets -- --deny warnings
+        run: cargo clippy --locked --no-deps -p "$CRATE" --all-targets -- --deny warnings
 
       - name: Purge tests with the fix
+        if: ${{ !cancelled() }}
         shell: bash
         run: cargo test --locked -p "$CRATE" --lib -- install::prepare_modules_state::tests
 
       - name: New test without the fix
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           git checkout "$BASE" -- "$FILE"
