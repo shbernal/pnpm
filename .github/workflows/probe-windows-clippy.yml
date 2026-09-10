@@ -1,0 +1,84 @@
+name: Probe workspace clippy per OS
+
+on:
+  push:
+    branches:
+      - 'probe/windows-clippy'
+
+permissions:
+  contents: read
+
+jobs:
+  clippy:
+    name: Clippy / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          rustup show
+          rustup component add clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The same command as the Rust CI clippy job, minus `-D warnings`. With
+      # `-D warnings` the first crate with a finding fails and every crate that
+      # depends on it is never linted, so the count would be incomplete.
+      - name: Workspace clippy (warnings, JSON)
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --locked --workspace --all-targets --message-format=json > clippy.json
+          echo "cargo clippy exit code: $?"
+          exit 0
+
+      - name: Summarize findings
+        shell: bash
+        run: |
+          jq -r 'select(.reason == "compiler-message" and .message.level == "warning" and .message.code != null)
+            | [ (.package_id | sub("^.*#"; "") | sub("@.*$"; "")),
+                .message.code.code,
+                ((.message.spans[] | select(.is_primary) | "\(.file_name):\(.line_start)") // "") ]
+            | @tsv' clippy.json | sort -u > findings.tsv
+          {
+            echo "## Clippy findings on $RUNNER_OS"
+            echo
+            echo "Total: $(wc -l < findings.tsv)"
+            echo
+            echo "### By lint"
+            echo '```'
+            cut -f2 findings.tsv | sort | uniq -c | sort -rn
+            echo '```'
+            echo "### By crate"
+            echo '```'
+            cut -f1 findings.tsv | sort | uniq -c | sort -rn
+            echo '```'
+            echo "### By crate and lint"
+            echo '```'
+            cut -f1,2 findings.tsv | sort | uniq -c | sort -rn
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### All findings"
+          cat findings.tsv
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clippy-${{ matrix.os }}
+          path: |
+            findings.tsv
+            clippy.json
