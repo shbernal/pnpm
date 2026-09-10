@@ -1,0 +1,72 @@
+name: Probe purge of Windows directory links
+
+on:
+  push:
+    branches:
+      - 'probe/**'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      BASE: 40b14636d0c798838f029e4da02a0c20d250a67a
+      CRATE: pnpm-package-manager
+      TEST: install::prepare_modules_state::tests::purge_removes_directory_links_without_following_them
+      FILE: pnpm/crates/package-manager/src/install/prepare_modules_state.rs
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+          persist-credentials: false
+
+      - name: Free disk space
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        shell: bash
+        run: cargo fmt -p "$CRATE" -- --check
+
+      - name: clippy
+        shell: bash
+        run: cargo clippy --locked -p "$CRATE" --all-targets -- --deny warnings
+
+      - name: Purge tests with the fix
+        shell: bash
+        run: cargo test --locked -p "$CRATE" --lib -- install::prepare_modules_state::tests
+
+      - name: New test without the fix
+        shell: bash
+        run: |
+          git checkout "$BASE" -- "$FILE"
+          git diff --stat HEAD -- "$FILE"
+          cargo test --locked -p "$CRATE" --lib --no-run
+          if cargo test --locked -p "$CRATE" --lib -- --exact "$TEST"; then
+            outcome=passed
+          else
+            outcome=failed
+          fi
+          echo "without the fix the test $outcome on $RUNNER_OS"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            [ "$outcome" = failed ]
+          else
+            [ "$outcome" = passed ]
+          fi
